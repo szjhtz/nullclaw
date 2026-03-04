@@ -7,7 +7,12 @@
         "api_key": "YOUR_OPENROUTER_API_KEY"
       },
       "vertex": {
-        "api_key": "YOUR_VERTEX_OAUTH_TOKEN_OR_SERVICE_ACCOUNT_JSON",
+        "api_key": {
+          "type": "service_account",
+          "project_id": "YOUR_GCP_PROJECT",
+          "client_email": "YOUR_SERVICE_ACCOUNT_EMAIL",
+          "private_key": "-----BEGIN PRIVATE KEY-----\\nYOUR_PRIVATE_KEY\\n-----END PRIVATE KEY-----\\n"
+        },
         "base_url": "https://aiplatform.googleapis.com/v1/projects/YOUR_GCP_PROJECT/locations/global/publishers/google/models"
       }
     }

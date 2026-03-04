@@ -20,6 +20,14 @@ pub fn parseStringArray(allocator: std.mem.Allocator, arr: std.json.Array) ![]co
     return try list.toOwnedSlice(allocator);
 }
 
+fn parseApiKeyField(allocator: std.mem.Allocator, value: std.json.Value) !?[]const u8 {
+    return switch (value) {
+        .string => |s| try allocator.dupe(u8, s),
+        .object, .array => try std.json.Stringify.valueAlloc(allocator, value, .{}),
+        else => null,
+    };
+}
+
 fn splitPrimaryModelRef(primary: []const u8) ?struct { provider: []const u8, model: []const u8 } {
     // Handle custom: prefix specially (e.g., "custom:https://example.com/v2/model")
     if (std.mem.startsWith(u8, primary, "custom:")) {
@@ -1661,7 +1669,7 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
                             .name = try self.allocator.dupe(u8, prov_name),
                         };
                         if (val.object.get("api_key")) |ak| {
-                            if (ak == .string) pe.api_key = try self.allocator.dupe(u8, ak.string);
+                            pe.api_key = try parseApiKeyField(self.allocator, ak);
                         }
                         if (val.object.get("base_url")) |ab| {
                             if (ab == .string) pe.base_url = try self.allocator.dupe(u8, ab.string);
