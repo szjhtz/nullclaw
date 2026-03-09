@@ -48,6 +48,10 @@ const DEFAULT_MAX_TOOL_ITERATIONS: u32 = 25;
 /// Maximum non-system messages before trimming.
 const DEFAULT_MAX_HISTORY: u32 = 50;
 
+fn estimate_text_tokens(text: []const u8) u32 {
+    return @intCast((text.len + 3) / 4);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Agent
 // ═══════════════════════════════════════════════════════════════════════════
@@ -245,6 +249,7 @@ pub const Agent = struct {
     temperature: f64,
     workspace_dir: []const u8,
     allowed_paths: []const []const u8 = &.{},
+    multimodal_unrestricted: bool = false,
     max_tool_iterations: u32,
     max_history_messages: u32,
     auto_save: bool,
@@ -397,6 +402,7 @@ pub const Agent = struct {
             .temperature = cfg.default_temperature,
             .workspace_dir = cfg.workspace_dir,
             .allowed_paths = cfg.autonomy.allowed_paths,
+            .multimodal_unrestricted = cfg.autonomy.level == .yolo,
             .max_tool_iterations = cfg.agent.max_tool_iterations,
             .max_history_messages = cfg.agent.max_history_messages,
             .auto_save = cfg.memory.auto_save,
@@ -414,12 +420,12 @@ pub const Agent = struct {
             .compaction_max_source_chars = cfg.agent.compaction_max_source_chars,
             .tool_filter_groups = cfg.agent.tool_filter_groups,
             .exec_security = switch (cfg.autonomy.level) {
-                .full => .full,
+                .full, .yolo => .full,
                 .read_only => .deny,
                 .supervised => .allowlist,
             },
             .exec_ask = switch (cfg.autonomy.level) {
-                .full, .read_only => .off,
+                .full, .read_only, .yolo => .off,
                 .supervised => .on_miss,
             },
             .history = .empty,
@@ -1277,6 +1283,8 @@ pub const Agent = struct {
             } };
             self.observer.recordEvent(&resp_event);
 
+            const response_text = response.contentOrEmpty();
+
             // Track tokens with provider-agnostic fallback when total is omitted.
             var normalized_usage = response.usage;
             if (normalized_usage.total_tokens == 0 and
@@ -1284,13 +1292,16 @@ pub const Agent = struct {
             {
                 normalized_usage.total_tokens = normalized_usage.prompt_tokens +| normalized_usage.completion_tokens;
             }
+            // Some providers/channels omit usage entirely; keep status counters useful.
+            if (normalized_usage.total_tokens == 0 and normalized_usage.prompt_tokens == 0 and normalized_usage.completion_tokens == 0 and response_text.len > 0) {
+                normalized_usage.completion_tokens = estimate_text_tokens(response_text);
+                normalized_usage.total_tokens = normalized_usage.completion_tokens;
+            }
             response.usage = normalized_usage;
 
             self.total_tokens += normalized_usage.total_tokens;
             self.last_turn_usage = normalized_usage;
             self.emitUsageRecord(&response, true);
-
-            const response_text = response.contentOrEmpty();
             const use_native = response.hasToolCalls();
 
             // Determine tool calls: structured (native) first, then XML fallback.
@@ -1978,6 +1989,8 @@ pub const Agent = struct {
 
         return multimodal.prepareMessagesForProvider(arena, m, .{
             .allowed_dirs = allowed,
+            .skip_dir_check = self.multimodal_unrestricted,
+            .allow_remote_fetch = self.multimodal_unrestricted,
         });
     }
 
@@ -4147,6 +4160,74 @@ test "turn includes reasoning and usage footer when enabled" {
     try std.testing.expect(std.mem.indexOf(u8, response, "final answer") != null);
 }
 
+test "turn estimates token usage when provider omits usage" {
+    const ProviderState = struct {
+        fn chatWithSystem(_: *anyopaque, allocator: std.mem.Allocator, _: ?[]const u8, _: []const u8, _: []const u8, _: f64) anyerror![]const u8 {
+            return allocator.dupe(u8, "");
+        }
+
+        fn chat(_: *anyopaque, allocator: std.mem.Allocator, _: providers.ChatRequest, _: []const u8, _: f64) anyerror!providers.ChatResponse {
+            return .{
+                .content = try allocator.dupe(u8, "final answer"),
+                .tool_calls = &.{},
+                .usage = .{},
+                .model = try allocator.dupe(u8, "test-model"),
+            };
+        }
+
+        fn supportsNativeTools(_: *anyopaque) bool {
+            return false;
+        }
+
+        fn getName(_: *anyopaque) []const u8 {
+            return "test";
+        }
+
+        fn deinitFn(_: *anyopaque) void {}
+    };
+
+    var state: u8 = 0;
+    const vtable = Provider.VTable{
+        .chatWithSystem = ProviderState.chatWithSystem,
+        .chat = ProviderState.chat,
+        .supportsNativeTools = ProviderState.supportsNativeTools,
+        .getName = ProviderState.getName,
+        .deinit = ProviderState.deinitFn,
+    };
+    const provider = Provider{ .ptr = @ptrCast(&state), .vtable = &vtable };
+
+    const allocator = std.testing.allocator;
+    var noop = observability.NoopObserver{};
+    var agent = Agent{
+        .allocator = allocator,
+        .provider = provider,
+        .tools = &.{},
+        .tool_specs = try allocator.alloc(ToolSpec, 0),
+        .mem = null,
+        .observer = noop.observer(),
+        .model_name = "test-model",
+        .temperature = 0.7,
+        .workspace_dir = "/tmp",
+        .max_tool_iterations = 2,
+        .max_history_messages = 20,
+        .auto_save = false,
+        .history = .empty,
+    };
+    defer agent.deinit();
+
+    const response = try agent.turn("hello");
+    defer allocator.free(response);
+
+    const expected_tokens = estimate_text_tokens("final answer");
+    try std.testing.expectEqual(@as(u64, expected_tokens), agent.tokensUsed());
+
+    const status = (try agent.handleSlashCommand("/status")).?;
+    defer allocator.free(status);
+    var expected_line_buf: [64]u8 = undefined;
+    const expected_line = try std.fmt.bufPrint(&expected_line_buf, "Tokens used: {d}", .{expected_tokens});
+    try std.testing.expect(std.mem.indexOf(u8, status, expected_line) != null);
+}
+
 test "turn refreshes system prompt after workspace markdown change" {
     const ReloadProvider = struct {
         fn chatWithSystem(_: *anyopaque, allocator: std.mem.Allocator, _: ?[]const u8, _: []const u8, _: []const u8, _: f64) anyerror![]const u8 {
@@ -5203,6 +5284,40 @@ test "Agent.fromConfig sets exec_security=allowlist for supervised autonomy" {
 
     try std.testing.expect(agent.exec_security == .allowlist);
     try std.testing.expect(agent.exec_ask == .on_miss);
+}
+
+test "Agent.fromConfig sets multimodal_unrestricted for yolo" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{
+        .workspace_dir = "/tmp/yc",
+        .config_path = "/tmp/yc/config.json",
+        .default_model = "openai/gpt-4.1-mini",
+        .allocator = allocator,
+    };
+    cfg.autonomy.level = .yolo;
+
+    var noop = observability.NoopObserver{};
+    var agent = try Agent.fromConfig(allocator, &cfg, undefined, &.{}, null, noop.observer());
+    defer agent.deinit();
+
+    try std.testing.expect(agent.multimodal_unrestricted == true);
+}
+
+test "Agent.fromConfig does not set multimodal_unrestricted for full" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{
+        .workspace_dir = "/tmp/yc",
+        .config_path = "/tmp/yc/config.json",
+        .default_model = "openai/gpt-4.1-mini",
+        .allocator = allocator,
+    };
+    cfg.autonomy.level = .full;
+
+    var noop = observability.NoopObserver{};
+    var agent = try Agent.fromConfig(allocator, &cfg, undefined, &.{}, null, noop.observer());
+    defer agent.deinit();
+
+    try std.testing.expect(agent.multimodal_unrestricted == false);
 }
 
 test "execBlockMessage allows all commands when exec_security=full" {
