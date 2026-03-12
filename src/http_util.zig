@@ -230,6 +230,19 @@ pub fn curlPostWithStatus(
     body: []const u8,
     headers: []const []const u8,
 ) !HttpResponse {
+    return curlPostWithStatusAndTimeout(allocator, url, body, headers, null);
+}
+
+/// HTTP POST via curl subprocess and include HTTP status code in response,
+/// with optional --max-time timeout.
+/// Caller owns `response.body`.
+pub fn curlPostWithStatusAndTimeout(
+    allocator: Allocator,
+    url: []const u8,
+    body: []const u8,
+    headers: []const []const u8,
+    max_time: ?[]const u8,
+) !HttpResponse {
     var argv_buf: [48][]const u8 = undefined;
     var argc: usize = 0;
 
@@ -237,6 +250,14 @@ pub fn curlPostWithStatus(
     argc += 1;
     argv_buf[argc] = "-s";
     argc += 1;
+
+    if (max_time) |mt| {
+        argv_buf[argc] = "--max-time";
+        argc += 1;
+        argv_buf[argc] = mt;
+        argc += 1;
+    }
+
     argv_buf[argc] = "-X";
     argc += 1;
     argv_buf[argc] = "POST";
