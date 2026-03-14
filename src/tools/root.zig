@@ -432,6 +432,7 @@ pub fn allTools(
         ht.* = .{
             .allowed_domains = opts.http_allowed_domains,
             .max_response_size = opts.http_max_response_size,
+            .timeout_secs = opts.http_timeout_secs,
         };
         try list.append(allocator, ht.tool());
 
@@ -557,6 +558,7 @@ pub fn subagentTools(
         http_enabled: bool = false,
         http_allowed_domains: []const []const u8 = &.{},
         http_max_response_size: u32 = 1_000_000,
+        http_timeout_secs: u64 = 30,
         allowed_paths: []const []const u8 = &.{},
         policy: ?*const @import("../security/policy.zig").SecurityPolicy = null,
         tools_config: @import("../config.zig").ToolsConfig = .{},
@@ -648,6 +650,7 @@ pub fn subagentTools(
         ht.* = .{
             .allowed_domains = opts.http_allowed_domains,
             .max_response_size = opts.http_max_response_size,
+            .timeout_secs = opts.http_timeout_secs,
         };
         try list.append(allocator, ht.tool());
     }
@@ -844,6 +847,7 @@ test "all tools wires http and web_search config into tool instances" {
             try std.testing.expectEqual(@as(usize, 2), ht.allowed_domains.len);
             try std.testing.expectEqualStrings("example.com", ht.allowed_domains[0]);
             try std.testing.expectEqual(@as(u32, 321_000), ht.max_response_size);
+            try std.testing.expectEqual(@as(u64, 12), ht.timeout_secs);
             saw_http = true;
             continue;
         }

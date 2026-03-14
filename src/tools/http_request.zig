@@ -14,6 +14,7 @@ const log = std.log.scoped(.http_request);
 pub const HttpRequestTool = struct {
     allowed_domains: []const []const u8 = &.{}, // empty = allow all
     max_response_size: u32 = 1_000_000,
+    timeout_secs: u64 = 30,
 
     pub const tool_name = "http_request";
     pub const tool_description = "Make HTTP requests to external APIs. Supports GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS methods. " ++
@@ -117,6 +118,7 @@ pub const HttpRequestTool = struct {
             connect_host,
             custom_headers,
             body,
+            self.timeout_secs,
             @intCast(self.max_response_size),
         ) catch |err| {
             if (err == error.CurlInterrupted) {
@@ -198,6 +200,7 @@ fn runCurlRequestWithStatus(
     connect_host: []const u8,
     headers: []const [2][]const u8,
     body: ?[]const u8,
+    timeout_secs: u64,
     max_response_size: usize,
 ) !http_util.HttpResponse {
     var argv_buf: [64][]const u8 = undefined;
@@ -214,7 +217,9 @@ fn runCurlRequestWithStatus(
     argc += 1;
     argv_buf[argc] = "--max-time";
     argc += 1;
-    argv_buf[argc] = "60";
+    var timeout_buf: [20]u8 = undefined;
+    const timeout_str = try std.fmt.bufPrint(&timeout_buf, "{d}", .{timeout_secs});
+    argv_buf[argc] = timeout_str;
     argc += 1;
 
     var resolve_entry: ?[]u8 = null;
