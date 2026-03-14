@@ -172,6 +172,20 @@ fn freeModelRouteConfig(allocator: std.mem.Allocator, route: types.ModelRouteCon
     if (route.api_key) |api_key| allocator.free(api_key);
 }
 
+/// Normalize a peer ID from config: convert legacy `#topic:N` format to
+/// canonical `:thread:N` format used internally for route matching.
+fn normalizePeerId(allocator: std.mem.Allocator, raw_id: []const u8) ![]u8 {
+    const legacy_sep = "#topic:";
+    if (std.mem.indexOf(u8, raw_id, legacy_sep)) |sep_pos| {
+        const chat_id = raw_id[0..sep_pos];
+        const thread_part = raw_id[sep_pos + legacy_sep.len ..];
+        if (chat_id.len > 0 and thread_part.len > 0) {
+            return std.fmt.allocPrint(allocator, "{s}:thread:{s}", .{ chat_id, thread_part });
+        }
+    }
+    return allocator.dupe(u8, raw_id);
+}
+
 fn parseAgentBindingsArray(
     allocator: std.mem.Allocator,
     arr: std.json.Array,
@@ -221,7 +235,7 @@ fn parseAgentBindingsArray(
                             if (parsePeerKind(kind_val.?.string)) |kind| {
                                 binding.match.peer = .{
                                     .kind = kind,
-                                    .id = try allocator.dupe(u8, id_val.?.string),
+                                    .id = try normalizePeerId(allocator, id_val.?.string),
                                 };
                             }
                         }
@@ -1941,4 +1955,70 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
             }
         }
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Tests
+// ════════════════════════════════════════════════════════════════════════════
+
+test "normalizePeerId converts legacy #topic: format to canonical :thread: format" {
+    const allocator = std.testing.allocator;
+
+    // Legacy #topic: format should be converted
+    const converted = try normalizePeerId(allocator, "-1009999999999#topic:4");
+    defer allocator.free(converted);
+    try std.testing.expectEqualStrings("-1009999999999:thread:4", converted);
+
+    // Canonical :thread: format should pass through unchanged
+    const canonical = try normalizePeerId(allocator, "-1009999999999:thread:4");
+    defer allocator.free(canonical);
+    try std.testing.expectEqualStrings("-1009999999999:thread:4", canonical);
+
+    // Plain peer ID without topic should pass through unchanged
+    const plain = try normalizePeerId(allocator, "-1009999999999");
+    defer allocator.free(plain);
+    try std.testing.expectEqualStrings("-1009999999999", plain);
+
+    // Direct chat ID should pass through unchanged
+    const direct = try normalizePeerId(allocator, "5555555555");
+    defer allocator.free(direct);
+    try std.testing.expectEqualStrings("5555555555", direct);
+}
+
+test "parseAgentBindingsArray normalizes legacy #topic: peer IDs" {
+    const allocator = std.testing.allocator;
+
+    const json_str =
+        \\[{
+        \\  "agent_id": "coder",
+        \\  "match": {
+        \\    "channel": "telegram",
+        \\    "account_id": "main",
+        \\    "peer": {
+        \\      "kind": "group",
+        \\      "id": "-1009999999999#topic:4"
+        \\    }
+        \\  }
+        \\}]
+    ;
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+    defer parsed.deinit();
+
+    const bindings = try parseAgentBindingsArray(allocator, parsed.value.array);
+    defer {
+        for (bindings) |b| {
+            allocator.free(b.agent_id);
+            if (b.match.channel) |ch| allocator.free(ch);
+            if (b.match.account_id) |aid| allocator.free(aid);
+            if (b.match.peer) |p| allocator.free(p.id);
+        }
+        allocator.free(bindings);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), bindings.len);
+    try std.testing.expectEqualStrings("coder", bindings[0].agent_id);
+    try std.testing.expect(bindings[0].match.peer != null);
+    // The legacy #topic:4 format must be normalized to :thread:4
+    try std.testing.expectEqualStrings("-1009999999999:thread:4", bindings[0].match.peer.?.id);
 }
