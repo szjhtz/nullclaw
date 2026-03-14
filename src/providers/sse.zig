@@ -191,10 +191,13 @@ pub fn parseSseLine(allocator: std.mem.Allocator, line: []const u8) !SseLineResu
     if (trimmed.len == 0) return .skip;
     if (trimmed[0] == ':') return .skip;
 
-    const prefix = "data: ";
-    if (!std.mem.startsWith(u8, trimmed, prefix)) return .skip;
-
-    const data = trimmed[prefix.len..];
+    // Accept both "data: " (standard SSE) and "data:" (no-space variant used by some providers, e.g. Kimi).
+    const data = if (std.mem.startsWith(u8, trimmed, "data: "))
+        trimmed["data: ".len..]
+    else if (std.mem.startsWith(u8, trimmed, "data:"))
+        trimmed["data:".len..]
+    else
+        return .skip;
 
     if (std.mem.eql(u8, data, "[DONE]")) return .done;
 
