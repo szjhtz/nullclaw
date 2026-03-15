@@ -765,7 +765,10 @@ pub const TelegramChannel = struct {
 
     pub fn isUserAllowed(self: *const TelegramChannel, sender: []const u8) bool {
         for (self.allow_from) |a| {
-            if (std.mem.eql(u8, a, "*")) return true;
+            if (std.mem.eql(u8, a, "*")) {
+                root.warnWildcardAllowAll();
+                return true;
+            }
             // Strip leading "@" from allowlist entry.
             const trimmed = if (a.len > 1 and a[0] == '@') a[1..] else a;
             // Case-insensitive: Telegram usernames are case-insensitive
@@ -784,7 +787,10 @@ pub const TelegramChannel = struct {
 
     pub fn isGroupUserAllowed(self: *const TelegramChannel, sender: []const u8) bool {
         for (self.group_allow_from) |a| {
-            if (std.mem.eql(u8, a, "*")) return true;
+            if (std.mem.eql(u8, a, "*")) {
+                root.warnWildcardAllowAll();
+                return true;
+            }
             const trimmed = if (a.len > 1 and a[0] == '@') a[1..] else a;
             if (std.ascii.eqlIgnoreCase(trimmed, sender)) return true;
         }

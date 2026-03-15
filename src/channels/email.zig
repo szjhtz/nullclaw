@@ -48,7 +48,10 @@ pub const EmailChannel = struct {
         if (self.config.allow_from.len == 0) return false;
 
         for (self.config.allow_from) |allowed| {
-            if (std.mem.eql(u8, allowed, "*")) return true;
+            if (std.mem.eql(u8, allowed, "*")) {
+                root.warnWildcardAllowAll();
+                return true;
+            }
 
             if (allowed.len > 0 and allowed[0] == '@') {
                 // Domain match with @ prefix: "@example.com"

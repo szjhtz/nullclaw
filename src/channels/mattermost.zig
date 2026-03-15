@@ -815,7 +815,10 @@ fn normalizeAllowEntry(entry: []const u8) []const u8 {
 fn allowEntryMatches(entry: []const u8, sender_id: []const u8, sender_name: ?[]const u8) bool {
     const normalized = normalizeAllowEntry(entry);
     if (normalized.len == 0) return false;
-    if (std.mem.eql(u8, normalized, "*")) return true;
+    if (std.mem.eql(u8, normalized, "*")) {
+        root.warnWildcardAllowAll();
+        return true;
+    }
     if (std.ascii.eqlIgnoreCase(normalized, normalizeAllowEntry(sender_id))) return true;
     if (sender_name) |name| {
         if (std.ascii.eqlIgnoreCase(normalized, normalizeAllowEntry(name))) return true;

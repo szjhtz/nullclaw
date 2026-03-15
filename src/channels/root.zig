@@ -21,7 +21,8 @@ const outbound = @import("../outbound.zig");
 const log = std.log.scoped(.channels);
 var wildcard_allowlist_warned = std.atomic.Value(bool).init(false);
 
-fn warnWildcardAllowAll() void {
+/// Emit a one-time warning when a channel allowlist uses `*` to allow all senders.
+pub fn warnWildcardAllowAll() void {
     if (wildcard_allowlist_warned.cmpxchgStrong(false, true, .acq_rel, .acquire) == null) {
         log.warn("Channel allowlist contains '*' wildcard; this enables allow-all behavior", .{});
     }
@@ -333,7 +334,10 @@ pub fn isAllowed(allowed: []const []const u8, sender: []const u8) bool {
 /// Check if a user/sender is in an allowlist (exact match, no case folding).
 pub fn isAllowedExact(allowed: []const []const u8, sender: []const u8) bool {
     for (allowed) |a| {
-        if (std.mem.eql(u8, a, "*")) return true;
+        if (std.mem.eql(u8, a, "*")) {
+            warnWildcardAllowAll();
+            return true;
+        }
         if (std.mem.eql(u8, a, sender)) return true;
     }
     return false;
