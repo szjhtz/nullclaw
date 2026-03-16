@@ -1,5 +1,6 @@
 const std = @import("std");
 const Atomic = @import("portable_atomic.zig").Atomic;
+const config_types = @import("config_types.zig");
 
 /// Events the observer can record.
 pub const ObserverEvent = union(enum) {
@@ -377,6 +378,7 @@ pub const OtelObserver = struct {
     allocator: std.mem.Allocator,
     endpoint: []const u8,
     service_name: []const u8,
+    headers: []const []const u8,
     spans: std.ArrayListUnmanaged(OtelSpan),
     mutex: std.Thread.Mutex,
     current_trace_id: [32]u8,
@@ -398,6 +400,7 @@ pub const OtelObserver = struct {
             .allocator = allocator,
             .endpoint = endpoint orelse "http://localhost:4318",
             .service_name = service_name orelse "nullclaw",
+            .headers = &.{},
             .spans = .empty,
             .mutex = .{},
             .current_trace_id = .{0} ** 32,
@@ -405,6 +408,34 @@ pub const OtelObserver = struct {
             .requests_total = Atomic(u64).init(0),
             .errors_total = Atomic(u64).init(0),
         };
+    }
+
+    pub fn initWithHeaders(
+        allocator: std.mem.Allocator,
+        endpoint: ?[]const u8,
+        service_name: ?[]const u8,
+        headers: []const config_types.DiagnosticsConfig.OtelHeaderEntry,
+    ) !OtelObserver {
+        var self = init(allocator, endpoint, service_name);
+        if (headers.len == 0) return self;
+
+        const owned_headers = try allocator.alloc([]const u8, headers.len);
+        errdefer allocator.free(owned_headers);
+
+        var built: usize = 0;
+        errdefer {
+            for (owned_headers[0..built]) |header| {
+                allocator.free(header);
+            }
+        }
+
+        for (headers, 0..) |header, i| {
+            owned_headers[i] = try std.fmt.allocPrint(allocator, "{s}: {s}", .{ header.key, header.value });
+            built += 1;
+        }
+
+        self.headers = owned_headers;
+        return self;
     }
 
     pub fn observer(self: *OtelObserver) Observer {
@@ -419,6 +450,13 @@ pub const OtelObserver = struct {
             span.deinit(self.allocator);
         }
         self.spans.deinit(self.allocator);
+        for (self.headers) |header| {
+            self.allocator.free(header);
+        }
+        if (self.headers.len > 0) {
+            self.allocator.free(self.headers);
+        }
+        self.headers = &.{};
     }
 
     fn resolve(ptr: *anyopaque) *OtelObserver {
@@ -669,7 +707,7 @@ pub const OtelObserver = struct {
         defer self.allocator.free(url_buf);
 
         // Best-effort send; free response if successful
-        if (http_util.curlPost(self.allocator, url_buf, payload, &.{})) |curl_resp| {
+        if (http_util.curlPost(self.allocator, url_buf, payload, self.headers)) |curl_resp| {
             self.allocator.free(curl_resp);
         } else |_| {}
 
@@ -689,6 +727,137 @@ pub const OtelObserver = struct {
 
     fn otelName(_: *anyopaque) []const u8 {
         return "otel";
+    }
+};
+
+/// Heap-owned runtime observer that wires config-selected backends into long-lived
+/// agent/session runtimes without dangling vtable pointers.
+pub const RuntimeObserver = struct {
+    allocator: std.mem.Allocator,
+    active_backend: Backend = .noop,
+    noop: NoopObserver = .{},
+    log: LogObserver = .{},
+    verbose: VerboseObserver = .{},
+    file: ?FileObserver = null,
+    otel: ?OtelObserver = null,
+    multi: ?MultiObserver = null,
+    multi_observers: []Observer = &.{},
+    owned_file_path: ?[]u8 = null,
+
+    const Backend = enum {
+        noop,
+        log,
+        verbose,
+        file,
+        otel,
+        multi,
+    };
+
+    pub fn create(
+        allocator: std.mem.Allocator,
+        workspace_dir: []const u8,
+        diagnostics: config_types.DiagnosticsConfig,
+        extra_observers: []const Observer,
+    ) !*RuntimeObserver {
+        const self = try allocator.create(RuntimeObserver);
+        errdefer allocator.destroy(self);
+        self.* = .{ .allocator = allocator };
+        errdefer self.deinit();
+        try self.initInPlace(workspace_dir, diagnostics, extra_observers);
+        return self;
+    }
+
+    pub fn destroy(self: *RuntimeObserver) void {
+        self.deinit();
+        self.allocator.destroy(self);
+    }
+
+    pub fn observer(self: *RuntimeObserver) Observer {
+        return switch (self.active_backend) {
+            .noop => self.noop.observer(),
+            .log => self.log.observer(),
+            .verbose => self.verbose.observer(),
+            .file => self.file.?.observer(),
+            .otel => self.otel.?.observer(),
+            .multi => self.multi.?.observer(),
+        };
+    }
+
+    pub fn deinit(self: *RuntimeObserver) void {
+        self.observer().flush();
+        if (self.otel) |*otel| {
+            otel.deinit();
+            self.otel = null;
+        }
+        if (self.multi_observers.len > 0) {
+            self.allocator.free(self.multi_observers);
+            self.multi_observers = &.{};
+        }
+        self.multi = null;
+        if (self.owned_file_path) |path| {
+            self.allocator.free(path);
+            self.owned_file_path = null;
+        }
+        self.file = null;
+        self.active_backend = .noop;
+    }
+
+    fn initInPlace(
+        self: *RuntimeObserver,
+        workspace_dir: []const u8,
+        diagnostics: config_types.DiagnosticsConfig,
+        extra_observers: []const Observer,
+    ) !void {
+        const backend = createObserver(diagnostics.backend);
+        const include_base = !std.mem.eql(u8, backend, "multi");
+
+        if (std.mem.eql(u8, backend, "log")) {
+            self.active_backend = .log;
+        } else if (std.mem.eql(u8, backend, "verbose")) {
+            self.active_backend = .verbose;
+        } else if (std.mem.eql(u8, backend, "file")) {
+            self.owned_file_path = try std.fmt.allocPrint(self.allocator, "{s}/nullclaw-observability.jsonl", .{workspace_dir});
+            self.file = .{ .path = self.owned_file_path.? };
+            self.active_backend = .file;
+        } else if (std.mem.eql(u8, backend, "otel")) {
+            self.otel = try OtelObserver.initWithHeaders(
+                self.allocator,
+                diagnostics.otel_endpoint,
+                diagnostics.otel_service_name,
+                diagnostics.otel_headers,
+            );
+            self.active_backend = .otel;
+        } else {
+            self.active_backend = .noop;
+        }
+
+        const should_include_base = include_base and self.active_backend != .noop;
+        const total = extra_observers.len + @as(usize, if (should_include_base) 1 else 0);
+        if (total == 0) return;
+
+        self.multi_observers = try self.allocator.alloc(Observer, total);
+        var idx: usize = 0;
+        if (should_include_base) {
+            self.multi_observers[idx] = self.baseObserver();
+            idx += 1;
+        }
+        for (extra_observers) |extra| {
+            self.multi_observers[idx] = extra;
+            idx += 1;
+        }
+        self.multi = .{ .observers = self.multi_observers };
+        self.active_backend = .multi;
+    }
+
+    fn baseObserver(self: *RuntimeObserver) Observer {
+        return switch (self.active_backend) {
+            .noop => self.noop.observer(),
+            .log => self.log.observer(),
+            .verbose => self.verbose.observer(),
+            .file => self.file.?.observer(),
+            .otel => self.otel.?.observer(),
+            .multi => unreachable,
+        };
     }
 };
 
@@ -1081,6 +1250,43 @@ test "OtelObserver init custom endpoint" {
     defer otel.deinit();
     try std.testing.expectEqualStrings("http://otel:4318", otel.endpoint);
     try std.testing.expectEqualStrings("myservice", otel.service_name);
+}
+
+test "OtelObserver initWithHeaders builds curl headers" {
+    const headers = [_]config_types.DiagnosticsConfig.OtelHeaderEntry{
+        .{ .key = "Authorization", .value = "Bearer secret" },
+        .{ .key = "x-nullwatch-source", .value = "nullclaw" },
+    };
+    var otel = try OtelObserver.initWithHeaders(std.testing.allocator, null, null, &headers);
+    defer otel.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), otel.headers.len);
+    try std.testing.expectEqualStrings("Authorization: Bearer secret", otel.headers[0]);
+    try std.testing.expectEqualStrings("x-nullwatch-source: nullclaw", otel.headers[1]);
+}
+
+test "RuntimeObserver combines configured backend with extra observers" {
+    var extra = NoopObserver{};
+    const headers = [_]config_types.DiagnosticsConfig.OtelHeaderEntry{
+        .{ .key = "Authorization", .value = "Bearer secret" },
+    };
+    const runtime_observer = try RuntimeObserver.create(
+        std.testing.allocator,
+        "/tmp",
+        .{
+            .backend = "otel",
+            .otel_service_name = "nullclaw",
+            .otel_headers = &headers,
+        },
+        &.{extra.observer()},
+    );
+    defer runtime_observer.destroy();
+
+    try std.testing.expectEqualStrings("multi", runtime_observer.observer().getName());
+    try std.testing.expect(runtime_observer.otel != null);
+    try std.testing.expectEqual(@as(usize, 1), runtime_observer.otel.?.headers.len);
+    try std.testing.expectEqualStrings("Authorization: Bearer secret", runtime_observer.otel.?.headers[0]);
+    try std.testing.expectEqual(@as(usize, 2), runtime_observer.multi_observers.len);
 }
 
 test "OtelObserver span building on agent_start" {

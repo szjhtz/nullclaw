@@ -2653,9 +2653,14 @@ fn runSignalChannel(allocator: std.mem.Allocator, args: []const []const u8, conf
     defer runtime_provider.deinit();
     const provider_i = runtime_provider.provider();
 
-    // Create noop observer
-    var noop_obs = yc.observability.NoopObserver{};
-    const obs = noop_obs.observer();
+    const runtime_observer = try yc.observability.RuntimeObserver.create(
+        allocator,
+        config.workspace_dir,
+        config.diagnostics,
+        &.{},
+    );
+    defer runtime_observer.destroy();
+    const obs = runtime_observer.observer();
 
     // Initialize session manager
     var session_mgr = yc.session.SessionManager.init(allocator, config, provider_i, tools, mem_opt, obs, if (mem_rt) |rt| rt.session_store else null, if (mem_rt) |*rt| rt.response_cache else null);
@@ -3171,9 +3176,14 @@ fn runTelegramChannel(allocator: std.mem.Allocator, args: []const []const u8, co
         yc.tools.bindMemoryRuntime(tools, rt);
     }
 
-    // Create noop observer
-    var noop_obs = yc.observability.NoopObserver{};
-    const obs = noop_obs.observer();
+    const runtime_observer = try yc.observability.RuntimeObserver.create(
+        allocator,
+        config.workspace_dir,
+        config.diagnostics,
+        &.{},
+    );
+    defer runtime_observer.destroy();
+    const obs = runtime_observer.observer();
 
     // Create provider with reliability wrapper (retry + fallback chains).
     var runtime_provider = try yc.providers.runtime_bundle.RuntimeProviderBundle.init(allocator, &config);

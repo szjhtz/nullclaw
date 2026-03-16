@@ -3416,6 +3416,8 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
     var sec_policy_opt: ?security.SecurityPolicy = null;
     var gateway_thread_observer = GatewayThreadObserver.init(allocator);
     defer gateway_thread_observer.deinit();
+    var runtime_observer: ?*observability.RuntimeObserver = null;
+    defer if (runtime_observer) |obs| obs.destroy();
     var a2a_registry = a2a.TaskRegistry.init(allocator);
     defer a2a_registry.deinit();
     const needs_local_agent = event_bus == null;
@@ -3423,6 +3425,12 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
     if (config_opt) |cfg_ptr| {
         const cfg = cfg_ptr;
         try applyRuntimeProviderOverrides(cfg);
+        runtime_observer = try observability.RuntimeObserver.create(
+            allocator,
+            cfg.workspace_dir,
+            cfg.diagnostics,
+            &.{gateway_thread_observer.observer()},
+        );
         state.rate_limiter = GatewayRateLimiter.init(
             cfg.gateway.pair_rate_limit_per_minute,
             cfg.gateway.webhook_rate_limit_per_minute,
@@ -3531,7 +3539,7 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16, config_ptr
                     .backend_name = cfg.memory.backend,
                 }) catch &.{};
 
-                var sm = session_mod.SessionManager.init(allocator, cfg, provider_i, tools_slice, mem_opt, gateway_thread_observer.observer(), if (mem_rt) |rt| rt.session_store else null, if (mem_rt) |*rt| rt.response_cache else null);
+                var sm = session_mod.SessionManager.init(allocator, cfg, provider_i, tools_slice, mem_opt, runtime_observer.?.observer(), if (mem_rt) |rt| rt.session_store else null, if (mem_rt) |*rt| rt.response_cache else null);
                 if (sec_policy_opt) |*policy| {
                     sm.policy = policy;
                 }

@@ -224,9 +224,14 @@ pub fn run(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     const message_arg = parsed_args.message_arg;
     const session_id = parsed_args.session_id;
 
-    // Create a noop observer
-    var noop = observability.NoopObserver{};
-    const obs = noop.observer();
+    const runtime_observer = try observability.RuntimeObserver.create(
+        allocator,
+        cfg.workspace_dir,
+        cfg.diagnostics,
+        &.{},
+    );
+    defer runtime_observer.destroy();
+    const obs = runtime_observer.observer();
 
     // Record agent start
     const start_event = ObserverEvent{ .agent_start = .{
