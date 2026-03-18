@@ -155,6 +155,7 @@ const compat_providers = [_]CompatProvider{
     .{ .name = "ovhcloud", .url = "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1", .display = "OVHcloud" },
     .{ .name = "ovh", .url = "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1", .display = "OVHcloud" },
     .{ .name = "novita", .url = "https://api.novita.ai/openai", .display = "Novita" },
+    .{ .name = "novita-ai", .url = "https://api.novita.ai/openai", .display = "Novita" },
 
     // ── Local Servers ─────────────────────────────────────────────────────
     .{ .name = "lmstudio", .url = "http://localhost:1234/v1", .display = "LM Studio" },
@@ -510,6 +511,7 @@ test "compatibleProviderUrl new providers" {
     try std.testing.expectEqualStrings("https://router.shengsuanyun.com/api/v1", compatibleProviderUrl("shengsuanyun").?);
     try std.testing.expectEqualStrings("https://oai.endpoints.kepler.ai.cloud.ovh.net/v1", compatibleProviderUrl("ovhcloud").?);
     try std.testing.expectEqualStrings("https://api.novita.ai/openai", compatibleProviderUrl("novita").?);
+    try std.testing.expectEqualStrings("https://api.novita.ai/openai", compatibleProviderUrl("novita-ai").?);
     try std.testing.expectEqualStrings("https://ark.ap-southeast.bytepluses.com/api/v3", compatibleProviderUrl("byteplus").?);
     try std.testing.expectEqualStrings("https://chutes.ai/api/v1", compatibleProviderUrl("chutes").?);
     try std.testing.expectEqualStrings("https://api.kimi.com/coding/v1", compatibleProviderUrl("kimi-code").?);
