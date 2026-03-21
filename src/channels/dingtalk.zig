@@ -1455,7 +1455,7 @@ pub const DingTalkChannel = struct {
 
         if (self.event_bus) |eb| {
             try eb.publishInbound(inbound);
-            log.info("dingtalk published inbound message from {s}: {s}", .{ owned.sender_id, owned.content });
+            log.debug("dingtalk published inbound message from {s} ({d} bytes)", .{ owned.sender_id, owned.content.len });
         } else {
             log.warn("dingtalk no event_bus, dropping message", .{});
             inbound.deinit(self.allocator);

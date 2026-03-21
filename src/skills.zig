@@ -641,7 +641,7 @@ pub fn freeSkills(allocator: std.mem.Allocator, skills_slice: []Skill) void {
 pub fn checkRequirements(allocator: std.mem.Allocator, skill: *Skill) void {
     var missing: std.ArrayListUnmanaged(u8) = .empty;
 
-    // Check required binaries via `which`
+    // Check required binaries via PATH lookup.
     for (skill.requires_bins) |bin| {
         const found = checkBinaryExists(allocator, bin);
         if (!found) {
