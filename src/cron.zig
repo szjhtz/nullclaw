@@ -1223,10 +1223,17 @@ fn loadJobsWithPolicy(scheduler: *CronScheduler, policy: LoadPolicy) !void {
             }
             break :blk JobType.shell;
         };
-        const prompt = blk: {
+        const prompt_raw: ?[]const u8 = blk: {
             if (obj.get("prompt")) |v| {
                 if (v == .string and v.string.len > 0) break :blk v.string;
             }
+            break :blk null;
+        };
+        // Normalize agent job text so prompt/command stay in sync regardless
+        // of which back-compat field was present in cron.json.
+        const prompt: ?[]const u8 = blk: {
+            if (prompt_raw) |p| break :blk p;
+            if (job_type == .agent) break :blk command_raw;
             break :blk null;
         };
         // Agent jobs may omit "command" and rely solely on "prompt".
@@ -1234,7 +1241,7 @@ fn loadJobsWithPolicy(scheduler: *CronScheduler, policy: LoadPolicy) !void {
         const command: []const u8 = blk: {
             if (command_raw) |c| break :blk c;
             if (job_type == .agent) {
-                if (prompt) |p| break :blk p;
+                if (prompt_raw) |p| break :blk p;
             }
             switch (policy) {
                 .best_effort => continue,
@@ -2209,12 +2216,34 @@ test "load agent job without command field falls back to prompt" {
     defer file.close();
     try file.writeAll(json);
 
-    try loadJobs(&scheduler);
+    try loadJobsStrict(&scheduler);
 
     const jobs = scheduler.listJobs();
     try std.testing.expectEqual(@as(usize, 1), jobs.len);
     try std.testing.expectEqualStrings("Check traffic", jobs[0].command);
     try std.testing.expectEqualStrings("Check traffic", jobs[0].prompt.?);
+}
+
+test "load agent job without prompt field falls back to command" {
+    var scheduler = CronScheduler.init(std.testing.allocator, 10, true);
+    defer scheduler.deinit();
+
+    const json =
+        \\[{"id":"ag-2","expression":"15 9 * * 2","job_type":"agent","command":"Summarize incidents","model":"openrouter/anthropic/claude-sonnet-4","paused":false,"one_shot":false,"enabled":true,"delete_after_run":false,"delivery_mode":"none"}]
+    ;
+    const path = try cronJsonPath(std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    const file = try std.fs.createFileAbsolute(path, .{});
+    defer file.close();
+    try file.writeAll(json);
+
+    try loadJobsStrict(&scheduler);
+
+    const jobs = scheduler.listJobs();
+    try std.testing.expectEqual(@as(usize, 1), jobs.len);
+    try std.testing.expectEqualStrings("Summarize incidents", jobs[0].command);
+    try std.testing.expect(jobs[0].prompt != null);
+    try std.testing.expectEqualStrings("Summarize incidents", jobs[0].prompt.?);
 }
 
 test "save and load roundtrip keeps delivery account routing" {
