@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const root = @import("root.zig");
 const config_types = @import("../config_types.zig");
 const bus = @import("../bus.zig");
+const fs_compat = @import("../fs_compat.zig");
 const http_util = @import("../http_util.zig");
 const platform = @import("../platform.zig");
 const websocket = @import("../websocket.zig");
@@ -275,7 +276,7 @@ fn attachment_cache_dir_path(allocator: std.mem.Allocator) ![]u8 {
 fn ensure_attachment_cache_dir(cache_dir: []const u8) !void {
     std.fs.makeDirAbsolute(cache_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
-        else => try std.fs.cwd().makePath(cache_dir),
+        else => try fs_compat.makePath(cache_dir),
     };
 }
 
@@ -717,8 +718,8 @@ pub const DingTalkChannel = struct {
     }
 
     fn isSenderAllowed(self: *const DingTalkChannel, sender_id: []const u8, sender_staff_id: []const u8) bool {
-        return root.isAllowedExact(self.allow_from, sender_id) or
-            (sender_staff_id.len > 0 and root.isAllowedExact(self.allow_from, sender_staff_id));
+        return root.isAllowedExactScoped("dingtalk channel", self.allow_from, sender_id) or
+            (sender_staff_id.len > 0 and root.isAllowedExactScoped("dingtalk channel", self.allow_from, sender_staff_id));
     }
 
     pub fn healthCheck(self: *DingTalkChannel) bool {
@@ -1562,6 +1563,13 @@ pub const DingTalkChannel = struct {
         return self.healthCheck();
     }
 
+    fn vtableSupportsStreamingOutbound(ptr: *anyopaque) bool {
+        const self: *DingTalkChannel = @ptrCast(@alignCast(ptr));
+        const template_id = self.ai_card_template_id orelse return false;
+        const streaming_key = self.ai_card_streaming_key orelse return false;
+        return template_id.len > 0 and streaming_key.len > 0;
+    }
+
     pub const vtable = root.Channel.VTable{
         .start = &vtableStart,
         .stop = &vtableStop,
@@ -1569,6 +1577,7 @@ pub const DingTalkChannel = struct {
         .sendEvent = &vtableSendEvent,
         .name = &vtableName,
         .healthCheck = &vtableHealthCheck,
+        .supportsStreamingOutbound = &vtableSupportsStreamingOutbound,
     };
 
     pub fn channel(self: *DingTalkChannel) root.Channel {
