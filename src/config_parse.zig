@@ -1944,6 +1944,9 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
             if (a2a.object.get("version")) |v| {
                 if (v == .string) self.a2a.version = try self.allocator.dupe(u8, v.string);
             }
+            if (a2a.object.get("multi_modal")) |v| {
+                if (v == .bool) self.a2a.multi_modal = v.bool;
+            }
         }
     }
 

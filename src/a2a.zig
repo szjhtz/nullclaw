@@ -415,7 +415,11 @@ pub fn handleAgentCard(allocator: std.mem.Allocator, cfg: *const Config) A2aResp
         w.writeAll("https://github.com/nullclaw/nullclaw") catch return errorResponse();
     }
     w.writeAll("\"}") catch return errorResponse();
-    w.writeAll(",\"capabilities\":{\"streaming\":true}") catch return errorResponse();
+    if (cfg.a2a.multi_modal) {
+        w.writeAll(",\"capabilities\":{\"streaming\":true,\"multi_modal\":true}") catch return errorResponse();
+    } else {
+        w.writeAll(",\"capabilities\":{\"streaming\":true}") catch return errorResponse();
+    }
     w.writeAll(",\"securitySchemes\":{\"bearerAuth\":{\"type\":\"http\",\"scheme\":\"bearer\",\"description\":\"Use a pairing token from /pair as the bearer token.\"}}") catch return errorResponse();
     w.writeAll(",\"security\":[{\"bearerAuth\":[]}]") catch return errorResponse();
     w.writeAll(",\"defaultInputModes\":[\"text/plain\"],\"defaultOutputModes\":[\"text/plain\"]") catch return errorResponse();

@@ -1315,6 +1315,9 @@ pub const A2aConfig = struct {
     description: []const u8 = "AI assistant",
     url: []const u8 = "",
     version: []const u8 = "1.0.0",
+    /// When true, the agent card advertises multi_modal capability,
+    /// signalling that the gateway's model accepts image/file attachments.
+    multi_modal: bool = false,
 };
 
 // ── Composio config ─────────────────────────────────────────────
