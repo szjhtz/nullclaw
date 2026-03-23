@@ -3,6 +3,8 @@ const observability = @import("observability.zig");
 const bootstrap_mod = @import("bootstrap/root.zig");
 const BootstrapProvider = bootstrap_mod.BootstrapProvider;
 
+const log = std.log.scoped(.heartbeat);
+
 const MAX_HEARTBEAT_FILE_BYTES: usize = 64 * 1024;
 
 pub const TickOutcome = enum {
@@ -115,8 +117,12 @@ pub const HeartbeatEngine = struct {
                 }
                 const tasks = try self.collectTasks(allocator);
                 defer freeTasks(allocator, tasks);
+                for (tasks) |task| {
+                    log.debug("heartbeat task: {s}", .{task});
+                }
                 return .{ .outcome = .processed, .task_count = tasks.len };
             }
+            log.debug("heartbeat tick: HEARTBEAT.md not found by bootstrap provider", .{});
             return .{ .outcome = .skipped_missing_file, .task_count = 0 };
         }
 
@@ -125,7 +131,10 @@ pub const HeartbeatEngine = struct {
         defer allocator.free(heartbeat_path);
 
         const file = std.fs.openFileAbsolute(heartbeat_path, .{}) catch |err| switch (err) {
-            error.FileNotFound => return .{ .outcome = .skipped_missing_file, .task_count = 0 },
+            error.FileNotFound => {
+                log.debug("heartbeat tick: HEARTBEAT.md not found at {s}", .{heartbeat_path});
+                return .{ .outcome = .skipped_missing_file, .task_count = 0 };
+            },
             else => return err,
         };
         defer file.close();
@@ -133,11 +142,15 @@ pub const HeartbeatEngine = struct {
         const content = try file.readToEndAlloc(allocator, MAX_HEARTBEAT_FILE_BYTES);
         defer allocator.free(content);
         if (isContentEffectivelyEmpty(content)) {
+            log.debug("heartbeat tick: HEARTBEAT.md is empty or has no actionable tasks", .{});
             return .{ .outcome = .skipped_empty_file, .task_count = 0 };
         }
 
         const tasks = try self.collectTasks(allocator);
         defer freeTasks(allocator, tasks);
+        for (tasks) |task| {
+            log.debug("heartbeat task: {s}", .{task});
+        }
 
         return .{ .outcome = .processed, .task_count = tasks.len };
     }
