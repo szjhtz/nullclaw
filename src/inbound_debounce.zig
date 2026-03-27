@@ -127,8 +127,9 @@ fn mergeIntoPending(allocator: std.mem.Allocator, pending: *bus.InboundMessage, 
     }
     try merged.appendSlice(allocator, incoming.content);
 
+    const merged_content = try merged.toOwnedSlice(allocator);
     allocator.free(pending.content);
-    pending.content = try merged.toOwnedSlice(allocator);
+    pending.content = merged_content;
 }
 
 test "inbound debouncer merges same sender and session key" {
@@ -165,4 +166,33 @@ test "inbound debouncer bypasses slash commands" {
     try debouncer.push(try bus.makeInbound(allocator, "cli", "user", "chat", "/help", "cli:chat"), 10, &out);
     try std.testing.expectEqual(@as(usize, 1), out.items.len);
     try std.testing.expectEqualStrings("/help", out.items[0].content);
+}
+
+fn mergeIntoPendingAllocationTest(allocator: std.mem.Allocator) !void {
+    var debouncer = InboundDebouncer.init(allocator, 3000);
+    defer debouncer.deinit();
+
+    var out: std.ArrayListUnmanaged(bus.InboundMessage) = .empty;
+    defer {
+        for (out.items) |msg| msg.deinit(allocator);
+        out.deinit(allocator);
+    }
+
+    const first = try bus.makeInbound(allocator, "discord", "u1", "c1", "hello", "discord:c1");
+    debouncer.push(first, 1_000, &out) catch |err| {
+        var rollback = first;
+        rollback.deinit(allocator);
+        return err;
+    };
+
+    const second = try bus.makeInbound(allocator, "discord", "u1", "c1", "world", "discord:c1");
+    try debouncer.push(second, 2_000, &out);
+}
+
+test "inbound debouncer merge frees allocations on out-of-memory" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        mergeIntoPendingAllocationTest,
+        .{},
+    );
 }

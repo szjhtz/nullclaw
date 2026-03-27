@@ -962,6 +962,41 @@ fn makeStreamingSinkForChannel(
     return filter.sink();
 }
 
+const DebouncedInboundPollResult = enum {
+    idle,
+    ready,
+    closed,
+};
+
+fn pollDebouncedInbound(
+    allocator: std.mem.Allocator,
+    event_bus: *bus_mod.Bus,
+    debouncer: *inbound_debounce.InboundDebouncer,
+    ready_messages: *std.ArrayListUnmanaged(bus_mod.InboundMessage),
+) DebouncedInboundPollResult {
+    const timeout_ms = debouncer.nextPollTimeoutMs(inbound_debounce.nowMs());
+    const maybe_msg = event_bus.consumeInboundTimeout(timeout_ms) catch |err| switch (err) {
+        error.Timeout => {
+            debouncer.flushMatured(inbound_debounce.nowMs(), ready_messages) catch |flush_err| {
+                log.warn("inbound debounce flush failed: {}", .{flush_err});
+            };
+            return if (ready_messages.items.len > 0) .ready else .idle;
+        },
+    };
+    if (maybe_msg) |msg| {
+        debouncer.push(msg, inbound_debounce.nowMs(), ready_messages) catch |push_err| {
+            log.warn("inbound debounce push failed: {}", .{push_err});
+            msg.deinit(allocator);
+        };
+        return if (ready_messages.items.len > 0) .ready else .idle;
+    }
+
+    debouncer.flushMatured(inbound_debounce.nowMs(), ready_messages) catch |flush_err| {
+        log.warn("inbound debounce flush failed: {}", .{flush_err});
+    };
+    return if (ready_messages.items.len > 0) .ready else .closed;
+}
+
 fn inboundDispatcherThread(
     allocator: std.mem.Allocator,
     event_bus: *bus_mod.Bus,
@@ -980,20 +1015,10 @@ fn inboundDispatcherThread(
 
     while (true) {
         if (debouncer.enabled()) {
-            const timeout_ms = debouncer.nextPollTimeoutMs(inbound_debounce.nowMs());
-            const maybe_msg = event_bus.consumeInboundTimeout(timeout_ms) catch |err| switch (err) {
-                error.Timeout => null,
-            };
-            if (maybe_msg) |msg| {
-                debouncer.push(msg, inbound_debounce.nowMs(), &ready_messages) catch |err| {
-                    log.warn("inbound debounce push failed: {}", .{err});
-                    msg.deinit(allocator);
-                };
-            } else {
-                debouncer.flushMatured(inbound_debounce.nowMs(), &ready_messages) catch |err| {
-                    log.warn("inbound debounce flush failed: {}", .{err});
-                };
-                if (ready_messages.items.len == 0) break;
+            switch (pollDebouncedInbound(allocator, event_bus, &debouncer, &ready_messages)) {
+                .ready => {},
+                .idle => continue,
+                .closed => break,
             }
         } else {
             const msg = event_bus.consumeInbound() orelse break;
@@ -1464,6 +1489,28 @@ test "makeStreamingSinkForChannel returns null when streaming is disabled" {
         .ctx = undefined,
     }, &filter);
     try std.testing.expect(sink == null);
+}
+
+test "pollDebouncedInbound keeps dispatcher alive across idle timeout" {
+    const allocator = std.testing.allocator;
+    var event_bus = bus_mod.Bus.init();
+    defer event_bus.close();
+
+    var debouncer = inbound_debounce.InboundDebouncer.init(allocator, 3000);
+    defer debouncer.deinit();
+
+    var ready_messages: std.ArrayListUnmanaged(bus_mod.InboundMessage) = .empty;
+    defer {
+        for (ready_messages.items) |msg| msg.deinit(allocator);
+        ready_messages.deinit(allocator);
+    }
+
+    // Regression: debounced idle polls must not terminate the inbound dispatcher.
+    try std.testing.expectEqual(
+        DebouncedInboundPollResult.idle,
+        pollDebouncedInbound(allocator, &event_bus, &debouncer, &ready_messages),
+    );
+    try std.testing.expectEqual(@as(usize, 0), ready_messages.items.len);
 }
 
 test "hasSupervisedChannels false for defaults" {
