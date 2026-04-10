@@ -1339,6 +1339,7 @@ pub const Config = struct {
         InvalidBackoffMs,
         InvalidHttpProxyUrl,
         InvalidApiErrorMaxChars,
+        InvalidOtelEndpoint,
         InvalidHttpSearchBaseUrl,
         InvalidHttpSearchProvider,
         InvalidHttpSearchFallbackProvider,
@@ -1418,6 +1419,11 @@ pub const Config = struct {
         if (self.diagnostics.api_error_max_chars) |n| {
             if (n < 200 or n > 10_000) {
                 return ValidationError.InvalidApiErrorMaxChars;
+            }
+        }
+        if (self.diagnostics.otel_endpoint) |otel_endpoint| {
+            if (!config_types.DiagnosticsConfig.isValidOtelEndpoint(otel_endpoint)) {
+                return ValidationError.InvalidOtelEndpoint;
             }
         }
         if (self.http_request.search_base_url) |search_base_url| {
@@ -1558,6 +1564,7 @@ pub const Config = struct {
             ValidationError.InvalidBackoffMs => std.debug.print("Config error: provider_backoff_ms must be <= 600000.\n", .{}),
             ValidationError.InvalidHttpProxyUrl => std.debug.print("Config error: http_request.proxy must be a non-empty http://, https://, or socks5:// URL.\n", .{}),
             ValidationError.InvalidApiErrorMaxChars => std.debug.print("Config error: diagnostics.api_error_max_chars must be in [200, 10000].\n", .{}),
+            ValidationError.InvalidOtelEndpoint => std.debug.print("Config error: diagnostics.otel.endpoint/otel_endpoint must be an absolute https:// URL (or http:// for localhost/private hosts).\n", .{}),
             ValidationError.InvalidHttpSearchBaseUrl => std.debug.print("Config error: http_request.search_base_url must be https://host[/search] or local http://host[:port][/search] (no query/fragment).\n", .{}),
             ValidationError.InvalidHttpSearchProvider => std.debug.print("Config error: http_request.search_provider must be one of: auto, searxng, duckduckgo(ddg), brave, firecrawl, tavily, perplexity, exa, jina.\n", .{}),
             ValidationError.InvalidHttpSearchFallbackProvider => std.debug.print("Config error: http_request.search_fallback_providers entries must be valid providers and cannot be 'auto'.\n", .{}),
@@ -2185,7 +2192,7 @@ test "save roundtrip preserves diagnostics otel headers" {
         .allocator = allocator,
     };
     cfg.diagnostics.backend = "otel";
-    cfg.diagnostics.otel_endpoint = "http://127.0.0.1:7710";
+    cfg.diagnostics.otel_endpoint = "https://127.0.0.1:7710";
     cfg.diagnostics.otel_service_name = "nullclaw";
     cfg.diagnostics.otel_headers = &headers;
     try cfg.save();
@@ -2204,7 +2211,7 @@ test "save roundtrip preserves diagnostics otel headers" {
     };
     try loaded.parseJson(content);
     try std.testing.expectEqualStrings("otel", loaded.diagnostics.backend);
-    try std.testing.expectEqualStrings("http://127.0.0.1:7710", loaded.diagnostics.otel_endpoint.?);
+    try std.testing.expectEqualStrings("https://127.0.0.1:7710", loaded.diagnostics.otel_endpoint.?);
     try std.testing.expectEqualStrings("nullclaw", loaded.diagnostics.otel_service_name.?);
     try std.testing.expectEqual(@as(usize, 2), loaded.diagnostics.otel_headers.len);
     try std.testing.expectEqualStrings("Authorization", loaded.diagnostics.otel_headers[0].key);
@@ -2889,6 +2896,29 @@ test "validation rejects remote http_request search base URL over plain http" {
     try std.testing.expectError(Config.ValidationError.InvalidHttpSearchBaseUrl, cfg.validate());
 }
 
+test "validation accepts local diagnostics otel endpoint over plain http" {
+    var cfg = Config{
+        .workspace_dir = "/tmp/yc",
+        .config_path = "/tmp/yc/config.json",
+        .default_model = "x",
+        .allocator = std.testing.allocator,
+    };
+    cfg.diagnostics.otel_endpoint = "http://localhost:4318";
+    try cfg.validate();
+}
+
+test "validation rejects remote diagnostics otel endpoint over plain http" {
+    var cfg = Config{
+        .workspace_dir = "/tmp/yc",
+        .config_path = "/tmp/yc/config.json",
+        .default_model = "x",
+        .allocator = std.testing.allocator,
+    };
+    // Regression: OTEL config must not silently allow remote plaintext exporters.
+    cfg.diagnostics.otel_endpoint = "http://otel.example.com:4318";
+    try std.testing.expectError(Config.ValidationError.InvalidOtelEndpoint, cfg.validate());
+}
+
 test "validation rejects invalid http_request search provider" {
     var cfg = Config{
         .workspace_dir = "/tmp/yc",
@@ -3452,7 +3482,7 @@ test "validation rejects relay ttl values outside supported ranges" {
 test "json parse diagnostics section" {
     const allocator = std.testing.allocator;
     const json =
-        \\{"diagnostics": {"backend": "otel", "log_tool_calls": true, "log_message_receipts": true, "log_message_payloads": true, "log_llm_io": true, "token_usage_ledger_enabled": false, "token_usage_ledger_window_hours": 12, "token_usage_ledger_max_bytes": 262144, "token_usage_ledger_max_lines": 4096, "otel": {"endpoint": "http://localhost:4318", "service_name": "yc", "headers": {"Authorization": "Bearer test", "x-nullwatch-source": "nullclaw"}}}}
+        \\{"diagnostics": {"backend": "otel", "log_tool_calls": true, "log_message_receipts": true, "log_message_payloads": true, "log_llm_io": true, "token_usage_ledger_enabled": false, "token_usage_ledger_window_hours": 12, "token_usage_ledger_max_bytes": 262144, "token_usage_ledger_max_lines": 4096, "otel": {"endpoint": "https://localhost:4318", "service_name": "yc", "headers": {"Authorization": "Bearer test", "x-nullwatch-source": "nullclaw"}}}}
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
@@ -3465,7 +3495,7 @@ test "json parse diagnostics section" {
     try std.testing.expectEqual(@as(u32, 12), cfg.diagnostics.token_usage_ledger_window_hours);
     try std.testing.expectEqual(@as(u64, 262144), cfg.diagnostics.token_usage_ledger_max_bytes);
     try std.testing.expectEqual(@as(u64, 4096), cfg.diagnostics.token_usage_ledger_max_lines);
-    try std.testing.expectEqualStrings("http://localhost:4318", cfg.diagnostics.otel_endpoint.?);
+    try std.testing.expectEqualStrings("https://localhost:4318", cfg.diagnostics.otel_endpoint.?);
     try std.testing.expectEqualStrings("yc", cfg.diagnostics.otel_service_name.?);
     try std.testing.expectEqual(@as(usize, 2), cfg.diagnostics.otel_headers.len);
     try std.testing.expectEqualStrings("Authorization", cfg.diagnostics.otel_headers[0].key);
@@ -3485,12 +3515,12 @@ test "json parse diagnostics section" {
 test "json parse diagnostics section accepts flat otel fields for compatibility" {
     const allocator = std.testing.allocator;
     const json =
-        \\{"diagnostics": {"backend": "otel", "otel_endpoint": "http://otel:4318", "otel_service_name": "nullclaw", "otel_headers": {"Authorization": "Bearer test"}}}
+        \\{"diagnostics": {"backend": "otel", "otel_endpoint": "https://otel:4318", "otel_service_name": "nullclaw", "otel_headers": {"Authorization": "Bearer test"}}}
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
     try std.testing.expectEqualStrings("otel", cfg.diagnostics.backend);
-    try std.testing.expectEqualStrings("http://otel:4318", cfg.diagnostics.otel_endpoint.?);
+    try std.testing.expectEqualStrings("https://otel:4318", cfg.diagnostics.otel_endpoint.?);
     try std.testing.expectEqualStrings("nullclaw", cfg.diagnostics.otel_service_name.?);
     try std.testing.expectEqual(@as(usize, 1), cfg.diagnostics.otel_headers.len);
     try std.testing.expectEqualStrings("Authorization", cfg.diagnostics.otel_headers[0].key);
@@ -3508,12 +3538,12 @@ test "json parse diagnostics section accepts flat otel fields for compatibility"
 test "json parse diagnostics section prefers nested otel fields over flat compatibility aliases" {
     const allocator = std.testing.allocator;
     const json =
-        \\{"diagnostics": {"backend": "otel", "otel_endpoint": "http://flat:4318", "otel_service_name": "flat-service", "otel_headers": {"Authorization": "Bearer flat"}, "otel": {"endpoint": "http://nested:4318", "service_name": "nested-service", "headers": {"Authorization": "Bearer nested"}}}}
+        \\{"diagnostics": {"backend": "otel", "otel_endpoint": "https://flat:4318", "otel_service_name": "flat-service", "otel_headers": {"Authorization": "Bearer flat"}, "otel": {"endpoint": "https://nested:4318", "service_name": "nested-service", "headers": {"Authorization": "Bearer nested"}}}}
     ;
     var cfg = Config{ .workspace_dir = "/tmp/yc", .config_path = "/tmp/yc/config.json", .allocator = allocator };
     try cfg.parseJson(json);
     try std.testing.expectEqualStrings("otel", cfg.diagnostics.backend);
-    try std.testing.expectEqualStrings("http://nested:4318", cfg.diagnostics.otel_endpoint.?);
+    try std.testing.expectEqualStrings("https://nested:4318", cfg.diagnostics.otel_endpoint.?);
     try std.testing.expectEqualStrings("nested-service", cfg.diagnostics.otel_service_name.?);
     try std.testing.expectEqual(@as(usize, 1), cfg.diagnostics.otel_headers.len);
     try std.testing.expectEqualStrings("Authorization", cfg.diagnostics.otel_headers[0].key);
